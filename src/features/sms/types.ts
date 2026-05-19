@@ -26,7 +26,7 @@ export interface SmsRelayFetchMessage {
 export interface SmsRelayFetchResponse {
   ok: boolean;
   message: string;
-  data?: string;
+  data?: unknown;
   status?: number;
   text?: string;
   raw?: unknown;

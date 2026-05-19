@@ -15,6 +15,10 @@ interface AddressSection {
 export function createAddressPanel(container: HTMLElement): FeaturePanelHandle {
   const summary = document.createElement('div');
   summary.className = 'opx-summary';
+  summary.append(
+    document.createTextNode('随机资料'),
+    createExternalLink('手动获取', 'https://www.meiguodizhi.com'),
+  );
 
   const countrySelect = createCountrySelect();
   const cityInput = document.createElement('input');
@@ -123,7 +127,11 @@ export function createAddressPanel(container: HTMLElement): FeaturePanelHandle {
   function renderSummary(settings: AddressAutofillSettings): void {
     const countryLabel = countrySelect.selectedOptions[0]?.textContent || settings.countryCode;
     const cityLabel = settings.city || '随机城市';
-    summary.textContent = `${countryLabel} · ${cityLabel}`;
+    summary.replaceChildren(
+      document.createTextNode(`${countryLabel} · ${cityLabel}`),
+      document.createTextNode(' · '),
+      createExternalLink('手动获取', 'https://www.meiguodizhi.com'),
+    );
   }
 
   function renderAddress(address: AddressProfile | null): void {
@@ -197,6 +205,18 @@ export function createAddressPanel(container: HTMLElement): FeaturePanelHandle {
     wrapper.append(title, body);
     return wrapper;
   }
+}
+
+function createExternalLink(label: string, href: string): HTMLAnchorElement {
+  const link = document.createElement('a');
+  link.textContent = label;
+  link.href = href;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.style.color = 'inherit';
+  link.style.textDecoration = 'underline';
+  link.style.marginLeft = '6px';
+  return link;
 }
 
 function addressSections(address: AddressProfile): AddressSection[] {

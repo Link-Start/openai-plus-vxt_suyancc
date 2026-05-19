@@ -2,6 +2,13 @@ import type { SmsRelayTarget } from './types';
 
 const MAX_CODE_LENGTH = 8;
 const MIN_CODE_LENGTH = 4;
+const SUCCESS_CODE_FIELD_NAMES = new Set([
+  'code',
+  'status',
+  'statuscode',
+  'errno',
+  'errorcode',
+]);
 const MESSAGE_FIELD_NAMES = new Set([
   'data',
   'message',
@@ -25,6 +32,12 @@ const IGNORE_FIELD_NAMES = new Set([
   'ret',
   'errno',
   'errorcode',
+  'expireddate',
+  'expiredate',
+  'expirationdate',
+  'codetime',
+  'time',
+  'timestamp',
 ]);
 const EMPTY_MESSAGE_PATTERN = /^(no\s*message|no\s*sms|empty|none|null|暂无|没有|未收到)$/i;
 const GENERIC_STATUS_PATTERN = /^(ok|success|successful|true|请求成功|成功)$/i;
@@ -83,10 +96,20 @@ export function extractSmsCode(message: string): string {
   }
 
   const matches = trimmed.match(new RegExp(`\\b\\d{${MIN_CODE_LENGTH},${MAX_CODE_LENGTH}}\\b`, 'g'));
-  return matches?.[0] || '';
+  if (matches?.[0]) {
+    return matches[0];
+  }
+
+  const looseMatches = trimmed.match(new RegExp(`\\d{${MIN_CODE_LENGTH},${MAX_CODE_LENGTH}}`, 'g'));
+  return preferLongerCode(looseMatches || []);
 }
 
 export function extractSmsPayload(payload: unknown): { code: string; message: string } {
+  const structured = extractStructuredSmsPayload(payload);
+  if (structured) {
+    return structured;
+  }
+
   const candidates = collectMessageCandidates(payload);
   const best = candidates
     .map((candidate) => ({
@@ -110,6 +133,46 @@ export function extractSmsPayload(payload: unknown): { code: string; message: st
     code: '',
     message: fallback || '',
   };
+}
+
+function extractStructuredSmsPayload(payload: unknown): { code: string; message: string } | null {
+  const root = isRecord(payload) && isRecord(payload.raw) ? payload.raw : payload;
+  if (!isRecord(root)) {
+    return null;
+  }
+
+  const apiCode = Number(root.code);
+  const apiMessage = String(root.msg || root.message || '').trim();
+  const data = root.data;
+  if (!isRecord(data)) {
+    return null;
+  }
+
+  const codeText = String(data.code || '').trim();
+  const code = extractSmsCode(codeText);
+  const codeTime = String(data.code_time || data.codeTime || '').trim();
+  if (apiCode === 1 && code) {
+    return {
+      code,
+      message: [codeText, codeTime ? `时间：${codeTime}` : ''].filter(Boolean).join(' · '),
+    };
+  }
+
+  if (apiCode === 0) {
+    return {
+      code: '',
+      message: apiMessage || '暂无验证码',
+    };
+  }
+
+  if (code) {
+    return {
+      code,
+      message: [codeText, codeTime ? `时间：${codeTime}` : ''].filter(Boolean).join(' · '),
+    };
+  }
+
+  return null;
 }
 
 interface MessageCandidate {
@@ -138,7 +201,7 @@ function collectMessageCandidates(payload: unknown): MessageCandidate[] {
     }
 
     if (typeof value === 'number') {
-      if (isLikelyCodeField(key)) {
+      if (isLikelyCodeField(key) && !isSuccessCodeField(key)) {
         addCandidate(String(value), key, depth);
       }
       return;
@@ -246,8 +309,23 @@ function isLikelyCodeField(key: string): boolean {
     normalized === 'captcha';
 }
 
+function isSuccessCodeField(key: string): boolean {
+  return SUCCESS_CODE_FIELD_NAMES.has(normalizeFieldName(key));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object');
+}
+
 function normalizeFieldName(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function preferLongerCode(values: string[]): string {
+  return values
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length)[0] || '';
 }
 
 function isHttpUrl(value: string): boolean {

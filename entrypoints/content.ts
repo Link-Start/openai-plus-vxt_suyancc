@@ -1,4 +1,5 @@
 import { mountAssistant } from '../src/app';
+import { canUseExtensionApi, isExtensionContextInvalidated } from '../src/app/extension-context';
 import { initPayOpenAiAddressAutofill } from '../src/features/address-autofill/pay-openai-autofill';
 import { initPaypalAutofill } from '../src/features/address-autofill/paypal-autofill';
 
@@ -21,7 +22,18 @@ export default defineContentScript({
     }
     scope[CONTENT_LOADED_KEY] = true;
 
-    mountAssistant();
+    if (!canUseExtensionApi()) {
+      return;
+    }
+
+    try {
+      mountAssistant();
+    } catch (error) {
+      if (isExtensionContextInvalidated(error)) {
+        return;
+      }
+      throw error;
+    }
     try {
       initPayOpenAiAddressAutofill();
     } catch (error) {

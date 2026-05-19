@@ -3,6 +3,7 @@ export const PANEL_STYLES = `
   all: initial;
   color-scheme: light dark;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  pointer-events: none;
 }
 
 .opx-shell {
@@ -13,6 +14,7 @@ export const PANEL_STYLES = `
   display: flex;
   align-items: flex-start;
   max-height: calc(100vh - 88px);
+  pointer-events: auto;
 }
 
 .opx-panel {
@@ -367,9 +369,20 @@ export const PANEL_STYLES = `
   border: 1px solid rgba(47, 209, 124, 0.36);
 }
 
+.opx-button-danger {
+  background: #7f1d1d;
+  color: #fee2e2;
+  border: 1px solid rgba(248, 113, 113, 0.42);
+}
+
 .opx-button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+.opx-textarea:disabled {
+  opacity: 0.72;
+  cursor: not-allowed;
 }
 
 .opx-status {

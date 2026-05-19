@@ -6,6 +6,7 @@ import { loadRegisterState, saveRegisterState } from '../../app/state';
 import type { ActionResult, PageState, RegisterController } from './types';
 
 let autoProfileStarted = false;
+const CHATGPT_REGISTER_URL = 'https://chatgpt.com/auth/login';
 
 export function createRegisterController(): RegisterController {
   return {
@@ -20,6 +21,10 @@ export function createRegisterController(): RegisterController {
         inputMode: parsed.mode,
         autoOtp: parsed.mode === 'outlook-line',
       });
+    },
+    openRegisterPage: async () => {
+      location.assign(CHATGPT_REGISTER_URL);
+      return { ok: true, message: '正在打开 ChatGPT 注册页' };
     },
     fillEmailFromInput: async () => {
       const state = await loadRegisterState();
@@ -96,6 +101,16 @@ export function createRegisterController(): RegisterController {
 }
 
 function getPageState(): PageState {
+  if (location.hostname === 'chatgpt.com' && location.pathname === '/') {
+    return {
+      kind: 'unknown',
+      label: 'ChatGPT 首页',
+      canFillEmail: false,
+      canFillOtp: false,
+      canFillProfile: false,
+    };
+  }
+
   if (isChatGptLoginPage()) {
     return {
       kind: 'login',

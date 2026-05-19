@@ -253,7 +253,7 @@ async function fetchSmsRelay(url: string): Promise<SmsRelayFetchResponse> {
   }
 
   if (isRecord(detail)) {
-    const data = String(detail.data || '').trim();
+    const data = detail.data;
     const message = String(detail.msg || detail.message || 'OK');
     return {
       ok: isSmsRelaySuccessPayload(detail),

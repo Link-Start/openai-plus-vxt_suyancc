@@ -12,6 +12,7 @@ export function createRegisterPanel(container: HTMLElement, controller: Register
   inputHint.className = 'opx-hint';
   inputHint.textContent = '支持 user@example.com 或 email----password----client_id----refresh_token';
 
+  const openRegisterButton = createButton('打开注册页', 'opx-button opx-button-secondary');
   const emailButton = createButton('填入邮箱并继续');
   const otp = document.createElement('input');
   otp.className = 'opx-input';
@@ -34,7 +35,7 @@ export function createRegisterPanel(container: HTMLElement, controller: Register
     if (accountInput.value !== saved.rawInput) {
       accountInput.value = saved.rawInput;
     }
-    emailButton.disabled = !page.canFillEmail;
+    emailButton.disabled = false;
     otpButton.disabled = !page.canFillOtp;
     autoOtpButton.disabled = !page.canFillOtp || !saved.autoOtp;
     profileButton.disabled = !page.canFillProfile;
@@ -48,6 +49,11 @@ export function createRegisterPanel(container: HTMLElement, controller: Register
     inputHint.textContent = saved.autoOtp
       ? 'Outlook 行模式：验证码页会通过本地 API 自动收码'
       : '单邮箱模式：验证码需要手动输入';
+  });
+
+  openRegisterButton.addEventListener('click', async () => {
+    setStatus(status, '正在打开注册页...', 'pending');
+    setResult(status, await controller.openRegisterPage());
   });
 
   emailButton.addEventListener('click', async () => {
@@ -75,7 +81,7 @@ export function createRegisterPanel(container: HTMLElement, controller: Register
     await update();
   });
 
-  container.append(accountInput, inputHint, emailButton, otp, otpButton, autoOtpButton, profileButton, status);
+  container.append(openRegisterButton, accountInput, inputHint, emailButton, otp, otpButton, autoOtpButton, profileButton, status);
   void update();
   return { update };
 }

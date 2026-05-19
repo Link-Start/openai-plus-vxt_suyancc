@@ -1,6 +1,7 @@
-import { loadRegisterState } from '../../app/state';
+import { loadRegisterState, loadSmsRelayState } from '../../app/state';
 import { parseAccountInput } from '../register/account-input';
 import { loadAddressAutofillSettings, saveAddressAutofillSettings } from '../settings/state';
+import { parseSmsRelayTargets } from '../sms/parser';
 import type { AddressAutofillSettings } from '../settings/types';
 import type { AddressProfile, RandomAddressResponse } from './types';
 
@@ -174,13 +175,15 @@ async function fillPaypalSignupFields(address: AddressProfile, allowRetry: boole
   }
 
   const email = await resolveEmail(address);
+  const password = createPaypalPassword(email);
+  const smsPhone = await resolveSmsPhone();
   const name = splitName(address.fullName);
   const expiry = parseExpiry(address.creditCard.expires);
 
   filled += fillText(PAYPAL_FIELDS.email, email, true);
-  filled += fillPasswordField(email);
-  renderPasswordEmailNote(email);
-  filled += fillText(PAYPAL_FIELDS.phone, address.phone, true);
+  filled += fillPasswordField(password);
+  renderPasswordEmailNote(email, password);
+  filled += fillText(PAYPAL_FIELDS.phone, smsPhone, true);
   filled += fillText(PAYPAL_FIELDS.cardNumber, address.creditCard.number, true);
   filled += fillText(PAYPAL_FIELDS.expiry, expiry.short, true);
   filled += fillText(PAYPAL_FIELDS.csc, address.creditCard.cvv, true);
@@ -225,6 +228,43 @@ async function resolveEmail(address: AddressProfile): Promise<string> {
     return address.identity.temporaryMail;
   }
   return createOutlookEmail(address);
+}
+
+async function resolveSmsPhone(): Promise<string> {
+  try {
+    const state = await loadSmsRelayState();
+    const parsed = parseSmsRelayTargets(state.rawInput);
+    return sanitizePhone(parsed.targets[0]?.phone || '');
+  } catch (error) {
+    console.debug(`${LOG_PREFIX} sms phone unavailable`, error);
+    return '';
+  }
+}
+
+function sanitizePhone(value: string): string {
+  return value.replace(/[^\d+]/g, '').trim();
+}
+
+function createPaypalPassword(email: string): string {
+  const localPart = (email.split('@')[0] || 'paypaluser').replace(/[^a-zA-Z0-9]/g, '');
+  const base = localPart.slice(0, 12) || 'paypaluser';
+  let password = `${base}1A`;
+  if (password.length < 8) {
+    password = `${password}${'x'.repeat(8 - password.length)}`;
+  }
+  if (password.length > 20) {
+    password = password.slice(0, 20);
+  }
+  if (!/[0-9!@#$%^]/.test(password)) {
+    password = `${password.slice(0, 19)}1`;
+  }
+  if (!/[a-zA-Z]/.test(password)) {
+    password = `Aa${password}`.slice(0, 20);
+  }
+  if (password.length < 8) {
+    password = `${password}Aa1`.padEnd(8, 'x').slice(0, 8);
+  }
+  return password.slice(0, 20);
 }
 
 function fillText(selectors: string[], value: string, overwrite: boolean): number {
@@ -279,16 +319,16 @@ function fillPasswordField(value: string): number {
   return 1;
 }
 
-function renderPasswordEmailNote(email: string): void {
+function renderPasswordEmailNote(email: string, password: string): void {
   const anchor = findPasswordDisclaimerAnchor();
   if (!anchor) {
     return;
   }
 
-  fillPasswordField(email);
+  fillPasswordField(password);
 
   const noteId = 'opx-paypal-password-note';
-  const text = `当前密码和邮箱一致（${email}）`;
+  const text = `当前密码由邮箱前缀生成（${email} -> ${password}）`;
   let note = document.getElementById(noteId);
   if (!note) {
     note = document.createElement('div');

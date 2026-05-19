@@ -1,5 +1,6 @@
 import { extractSmsPayload } from './parser';
 import type { SmsRelayFetchResponse, SmsRelayTarget } from './types';
+import { isExtensionContextInvalidated } from '../../app/extension-context';
 
 export type SmsPollResult =
   | {
@@ -27,6 +28,13 @@ export async function fetchSmsRelayCode(target: SmsRelayTarget): Promise<SmsPoll
       url: target.url,
     });
   } catch (error) {
+    if (isExtensionContextInvalidated(error)) {
+      return {
+        kind: 'error',
+        target,
+        message: '插件已重新加载，请刷新当前页面',
+      };
+    }
     return {
       kind: 'error',
       target,
@@ -54,7 +62,7 @@ export async function fetchSmsRelayCode(target: SmsRelayTarget): Promise<SmsPoll
     return {
       kind: 'empty',
       target,
-      message: message || response.data || response.message || '暂无短信',
+      message: message || stringifyMessage(response.data) || response.message || '暂无短信',
     };
   }
 
@@ -77,4 +85,18 @@ function isSmsRelayFetchResponse(value: unknown): value is SmsRelayFetchResponse
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function stringifyMessage(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (value === null || value === undefined) {
+    return '';
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }

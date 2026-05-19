@@ -10,12 +10,25 @@ const PAYPAL_SELECTORS = [
   'button[aria-label*="PayPal"]',
   'button[aria-label*="paypal" i]',
 ];
+const OPENAI_RANDOM_BUTTON_ID = 'opx-openai-pay-random-fill';
+const AUTOCOMPLETE_DROPDOWN_SELECTOR = '.AutocompleteInput-dropdown-container';
+const AUTOCOMPLETE_HIDE_STYLE_ID = 'opx-openai-pay-autocomplete-hide-style';
+const MAX_AUTO_AUTOFILL_ATTEMPTS = 4;
+
+interface StorageChangeValue {
+  oldValue?: unknown;
+  newValue?: unknown;
+}
 
 let initialized = false;
 let running = false;
 let scheduledTimer: number | null = null;
 let pageAddress: AddressProfile | null = null;
 let pageAddressScope = '';
+let fillInFlight = false;
+let filledAddressKey = '';
+let autoAttemptCount = 0;
+let autoAutofillFinished = false;
 
 export function initPayOpenAiAddressAutofill(): void {
   if (initialized || location.hostname !== 'pay.openai.com') {
@@ -25,15 +38,19 @@ export function initPayOpenAiAddressAutofill(): void {
   initialized = true;
   installStorageListener();
   installObserver();
+  installAutocompleteHideStyle();
+  installRandomFillButton();
+  hideAutocompleteDropdowns();
   scheduleAutofill(800);
 }
 
 async function runAutofill(): Promise<void> {
-  if (running) {
+  if (running || autoAutofillFinished || autoAttemptCount >= MAX_AUTO_AUTOFILL_ATTEMPTS) {
     return;
   }
 
   running = true;
+  autoAttemptCount += 1;
   try {
     const settings = await loadAddressAutofillSettings();
     if (!settings.payOpenAiEnabled) {
@@ -47,7 +64,14 @@ async function runAutofill(): Promise<void> {
       return;
     }
 
-    const result = await fillPayOpenAiAddressNow(address);
+    const result = await fillPayOpenAiAddressNow(address, { force: false });
+    if (result.ok || filledAddressKey === createAddressKey(address)) {
+      autoAutofillFinished = true;
+      cancelScheduledAutofill();
+    } else if (autoAttemptCount >= MAX_AUTO_AUTOFILL_ATTEMPTS) {
+      autoAutofillFinished = true;
+    }
+
     console.info(`${LOG_PREFIX} ${result.message}`, {
       city: address.city,
       state: address.state,
@@ -62,24 +86,55 @@ async function runAutofill(): Promise<void> {
   }
 }
 
-export async function fillPayOpenAiAddressNow(address: AddressProfile): Promise<{ ok: boolean; filled: number; message: string }> {
+export async function fillPayOpenAiAddressNow(
+  address: AddressProfile,
+  options: { force?: boolean } = { force: true },
+): Promise<{ ok: boolean; filled: number; message: string }> {
   if (location.hostname !== 'pay.openai.com') {
     return { ok: false, filled: 0, message: '当前不是 pay.openai.com 页面' };
   }
 
-  selectPaypalIfPresent();
-  await delay(450);
-  const filled = await fillCheckoutFields(address);
-  return {
-    ok: filled > 0,
-    filled,
-    message: filled > 0 ? `已填写 OpenAI 支付页 ${filled} 项` : '未找到可填写的 OpenAI 支付字段',
-  };
+  const addressKey = createAddressKey(address);
+  if (!options.force && filledAddressKey === addressKey) {
+    return { ok: true, filled: 0, message: 'OpenAI 支付页已填写过当前地址' };
+  }
+
+  if (fillInFlight) {
+    return { ok: false, filled: 0, message: 'OpenAI 支付页正在填写，已跳过重复触发' };
+  }
+
+  fillInFlight = true;
+  try {
+    selectPaypalIfPresent();
+    await delay(450);
+    const filled = await fillCheckoutFields(address);
+    if (filled > 0 || checkoutContainsAddressValues(address)) {
+      filledAddressKey = addressKey;
+    }
+    hideAutocompleteDropdowns();
+    return {
+      ok: filled > 0 || filledAddressKey === addressKey,
+      filled,
+      message: filled > 0
+        ? `已填写 OpenAI 支付页 ${filled} 项`
+        : filledAddressKey === addressKey
+          ? 'OpenAI 支付页已存在当前地址'
+          : '未找到可填写的 OpenAI 支付字段',
+    };
+  } finally {
+    fillInFlight = false;
+  }
 }
 
 async function getPageAddress(settings: AddressAutofillSettings): Promise<AddressProfile | null> {
   const scope = `${settings.countryCode}|${settings.city}`;
   if (pageAddress && pageAddressScope === scope) {
+    return pageAddress;
+  }
+
+  if (settings.lastAddress && addressMatchesScope(settings.lastAddress, settings)) {
+    pageAddress = settings.lastAddress;
+    pageAddressScope = scope;
     return pageAddress;
   }
 
@@ -102,6 +157,47 @@ async function fetchAndStoreAddress(settings: AddressAutofillSettings): Promise<
 
   await saveAddressAutofillSettings({ lastAddress: response.address });
   return response.address;
+}
+
+async function fetchFreshAddressAndFill(button: HTMLButtonElement, status: HTMLElement): Promise<void> {
+  cancelScheduledAutofill();
+  autoAutofillFinished = true;
+  button.disabled = true;
+  button.textContent = '获取中...';
+  Object.assign(button.style, {
+    cursor: 'wait',
+    opacity: '0.72',
+  });
+  status.textContent = '正在获取随机地址';
+
+  try {
+    const settings = await loadAddressAutofillSettings();
+    const response = await browser.runtime.sendMessage({
+      type: 'opx:fetch-random-address',
+      countryCode: settings.countryCode,
+      city: settings.city,
+    });
+
+    if (!isRandomAddressResponse(response) || !response.ok || !response.address) {
+      status.textContent = response?.message || '获取失败';
+      return;
+    }
+
+    pageAddress = response.address;
+    pageAddressScope = `${settings.countryCode}|${settings.city}`;
+    await saveAddressAutofillSettings({ lastAddress: response.address });
+    const result = await fillPayOpenAiAddressNow(response.address, { force: true });
+    status.textContent = result.ok ? `已输入 ${result.filled} 项` : result.message;
+  } catch (error) {
+    status.textContent = `失败：${errorMessage(error)}`;
+  } finally {
+    button.disabled = false;
+    button.textContent = '随机地址';
+    Object.assign(button.style, {
+      cursor: 'pointer',
+      opacity: '1',
+    });
+  }
 }
 
 async function fillCheckoutFields(address: AddressProfile): Promise<number> {
@@ -128,6 +224,7 @@ async function fillCheckoutFields(address: AddressProfile): Promise<number> {
   filled += fillSelectOrInputByAutocomplete('billing address-level1', address.state, [address.stateFull, address.state]);
   filled += fillSelectByAutocomplete('billing country', address.countryCode, [address.countryLabel, address.countryCode]);
   filled += checkVisibleTermsCheckboxes();
+  hideAutocompleteDropdowns();
 
   return filled;
 }
@@ -249,6 +346,27 @@ function setNativeValue(input: HTMLInputElement | HTMLTextAreaElement, value: st
   emitChange(input);
 }
 
+function checkoutContainsAddressValues(address: AddressProfile): boolean {
+  const expectedValues = [
+    address.fullName,
+    address.line1,
+    address.line2,
+    address.city,
+    address.state,
+    address.postalCode,
+  ].filter(Boolean);
+  if (expectedValues.length === 0) {
+    return false;
+  }
+
+  const values = Array.from(document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input, textarea'))
+    .filter(isTextControl)
+    .map((input) => normalizedText(input.value))
+    .filter(Boolean);
+  const matched = expectedValues.filter((value) => values.includes(normalizedText(value))).length;
+  return matched >= Math.min(3, expectedValues.length);
+}
+
 function checkVisibleTermsCheckboxes(): number {
   let checked = 0;
   const checkboxes = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))
@@ -302,11 +420,144 @@ function clickElement(element: HTMLElement): void {
 }
 
 function installObserver(): void {
-  const observer = new MutationObserver(() => scheduleAutofill(250));
+  const observer = new MutationObserver(() => {
+    installRandomFillButton();
+    hideAutocompleteDropdowns();
+    if (!autoAutofillFinished && autoAttemptCount < MAX_AUTO_AUTOFILL_ATTEMPTS) {
+      scheduleAutofill(250);
+    }
+  });
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true,
   });
+}
+
+function installAutocompleteHideStyle(): void {
+  if (document.getElementById(AUTOCOMPLETE_HIDE_STYLE_ID)) {
+    return;
+  }
+
+  const style = document.createElement('style');
+  style.id = AUTOCOMPLETE_HIDE_STYLE_ID;
+  style.textContent = `
+${AUTOCOMPLETE_DROPDOWN_SELECTOR} {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+`;
+  document.documentElement.append(style);
+}
+
+function hideAutocompleteDropdowns(): void {
+  for (const element of document.querySelectorAll<HTMLElement>(AUTOCOMPLETE_DROPDOWN_SELECTOR)) {
+    element.style.setProperty('display', 'none', 'important');
+    element.style.setProperty('visibility', 'hidden', 'important');
+    element.style.setProperty('pointer-events', 'none', 'important');
+  }
+}
+
+function installRandomFillButton(): void {
+  if (document.getElementById(OPENAI_RANDOM_BUTTON_ID)) {
+    return;
+  }
+
+  const heading = findPaymentMethodHeading();
+  if (!heading?.parentElement) {
+    return;
+  }
+
+  const target = findPaymentMethodButtonTarget(heading);
+  const wrapper = document.createElement('span');
+  wrapper.id = OPENAI_RANDOM_BUTTON_ID;
+  wrapper.setAttribute('data-opx-openai-random-fill', '1');
+  Object.assign(wrapper.style, {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: '8px',
+    marginLeft: '10px',
+    verticalAlign: 'middle',
+  });
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = '随机地址';
+  Object.assign(button.style, {
+    appearance: 'none',
+    border: '0',
+    borderRadius: '6px',
+    background: '#10b981',
+    color: '#ffffff',
+    cursor: 'pointer',
+    fontSize: '12px',
+    fontWeight: '700',
+    lineHeight: '1',
+    minHeight: '28px',
+    padding: '0 12px',
+    whiteSpace: 'nowrap',
+  });
+
+  const status = document.createElement('span');
+  Object.assign(status.style, {
+    color: '#64748b',
+    fontSize: '12px',
+    lineHeight: '16px',
+    minWidth: '0',
+    whiteSpace: 'nowrap',
+  });
+
+  button.addEventListener('click', () => {
+    void fetchFreshAddressAndFill(button, status);
+  });
+
+  wrapper.append(button, status);
+  target.append(wrapper);
+}
+
+function findPaymentMethodHeading(): HTMLElement | null {
+  const exact = document.querySelector<HTMLElement>('.PaymentMethod-Heading');
+  if (exact && isVisible(exact)) {
+    return exact;
+  }
+
+  return Array.from(document.querySelectorAll<HTMLElement>('h1, h2, h3, div, span'))
+    .filter(isVisible)
+    .find((element) => {
+      const text = normalizedText(element.textContent);
+      return text === '支付方式' || text === 'payment method' || text === 'payment methods';
+    }) || null;
+}
+
+function findPaymentMethodButtonTarget(heading: HTMLElement): HTMLElement {
+  const container = heading.closest<HTMLElement>('.flex-item.width-12') ||
+    heading.parentElement ||
+    heading;
+  Object.assign(container.style, {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0',
+    flexWrap: 'wrap',
+  });
+  Object.assign(heading.style, {
+    marginRight: '0',
+  });
+  return container;
+}
+
+function createAddressKey(address: AddressProfile): string {
+  return [
+    address.id,
+    address.fullName,
+    address.countryCode,
+    address.line1,
+    address.line2,
+    address.city,
+    address.state,
+    address.postalCode,
+    address.phone,
+  ].join('|');
 }
 
 function installStorageListener(): void {
@@ -315,12 +566,60 @@ function installStorageListener(): void {
       return;
     }
 
-    if (Object.keys(changes).some((key) => key.includes('settings'))) {
-      pageAddress = null;
-      pageAddressScope = '';
+    if (hasAddressScopeChange(changes)) {
+      resetAutofillStateForScopeChange();
       scheduleAutofill(100);
     }
   });
+}
+
+function hasAddressScopeChange(changes: Record<string, StorageChangeValue>): boolean {
+  for (const change of Object.values(changes)) {
+    const oldSettings = normalizeAddressSettingsChangeValue(change.oldValue);
+    const newSettings = normalizeAddressSettingsChangeValue(change.newValue);
+    if (!oldSettings || !newSettings) {
+      continue;
+    }
+
+    if (
+      oldSettings.payOpenAiEnabled !== newSettings.payOpenAiEnabled ||
+      oldSettings.countryCode !== newSettings.countryCode ||
+      oldSettings.city !== newSettings.city
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function resetAutofillStateForScopeChange(): void {
+  pageAddress = null;
+  pageAddressScope = '';
+  filledAddressKey = '';
+  autoAttemptCount = 0;
+  autoAutofillFinished = false;
+}
+
+function normalizeAddressSettingsChangeValue(value: unknown): Pick<AddressAutofillSettings, 'payOpenAiEnabled' | 'countryCode' | 'city'> | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const source = isRecord(value.addressAutofill) ? value.addressAutofill : value;
+  if (!('payOpenAiEnabled' in source) && !('countryCode' in source) && !('city' in source)) {
+    return null;
+  }
+  return {
+    payOpenAiEnabled: Boolean(source.payOpenAiEnabled),
+    countryCode: String(source.countryCode || '').trim(),
+    city: String(source.city || '').trim(),
+  };
+}
+
+function addressMatchesScope(address: AddressProfile, settings: AddressAutofillSettings): boolean {
+  const countryMatches = settings.countryCode === 'RANDOM' || address.countryCode === settings.countryCode;
+  const city = settings.city.trim().toLowerCase();
+  const cityMatches = !city || address.city.toLowerCase() === city;
+  return countryMatches && cityMatches;
 }
 
 function scheduleAutofill(delayMs: number): void {
@@ -331,6 +630,17 @@ function scheduleAutofill(delayMs: number): void {
     scheduledTimer = null;
     void runAutofill();
   }, delayMs);
+}
+
+function cancelScheduledAutofill(): void {
+  if (scheduledTimer) {
+    window.clearTimeout(scheduledTimer);
+    scheduledTimer = null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object');
 }
 
 function isVisible(element: Element): boolean {
@@ -388,6 +698,10 @@ function cssEscape(value: string): string {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function isRandomAddressResponse(value: unknown): value is RandomAddressResponse {

@@ -86,6 +86,7 @@ export function createLinkExtractorPanel(container: HTMLElement): FeaturePanelHa
   let sessionAccessToken = '';
   let sessionFetchInFlight = false;
   let sessionFetchedOnce = false;
+  let generateLinkInFlight = false;
 
   const update = async () => {
     const saved = await loadLinkExtractorState();
@@ -123,43 +124,56 @@ export function createLinkExtractorPanel(container: HTMLElement): FeaturePanelHa
   });
 
   generateLinkButton.addEventListener('click', async () => {
+    if (generateLinkInFlight) {
+      return;
+    }
+    generateLinkInFlight = true;
+    const originalLabel = generateLinkButton.textContent || '生成订阅链接';
+    generateLinkButton.disabled = true;
+    generateLinkButton.textContent = '生成中...';
     setStatus(linkStatus, '正在生成订阅链接...', 'pending');
-    const token = tokenInput.value.trim() ? normalizeTokenInput(true) : sessionAccessToken;
-    if (!token) {
-      setStatus(linkStatus, '没有 accessToken，请先读取 session 或手动粘贴。', 'error');
-      return;
-    }
-
-    let options: CheckoutOptions;
     try {
-      options = readCheckoutOptions();
-      await saveLinkExtractorState({ checkoutOptions: options });
-    } catch (error) {
-      setStatus(linkStatus, errorMessage(error), 'error');
-      return;
-    }
+      const token = tokenInput.value.trim() ? normalizeTokenInput(true) : sessionAccessToken;
+      if (!token) {
+        setStatus(linkStatus, '没有 accessToken，请先读取 session 或手动粘贴。', 'error');
+        return;
+      }
 
-    let response: CheckoutLinkResponse;
-    try {
-      response = await browser.runtime.sendMessage({
-        type: 'opx:create-checkout-link',
-        raw: token,
-        options,
-      });
-    } catch (error) {
-      setStatus(linkStatus, `生成失败：${String(error)}`, 'error');
-      return;
-    }
+      let options: CheckoutOptions;
+      try {
+        options = readCheckoutOptions();
+        await saveLinkExtractorState({ checkoutOptions: options });
+      } catch (error) {
+        setStatus(linkStatus, errorMessage(error), 'error');
+        return;
+      }
 
-    const link = response?.link || response?.url || '';
-    if (!isCheckoutLinkResponse(response) || !response.ok || !link) {
-      setStatus(linkStatus, response?.message || '生成失败：返回结果无效', 'error');
-      setGeneratedLink('');
-      return;
-    }
+      let response: CheckoutLinkResponse;
+      try {
+        response = await browser.runtime.sendMessage({
+          type: 'opx:create-checkout-link',
+          raw: token,
+          options,
+        });
+      } catch (error) {
+        setStatus(linkStatus, `生成失败：${String(error)}`, 'error');
+        return;
+      }
 
-    setGeneratedLink(link);
-    setStatus(linkStatus, response.message, 'ok');
+      const link = response?.link || response?.url || '';
+      if (!isCheckoutLinkResponse(response) || !response.ok || !link) {
+        setStatus(linkStatus, response?.message || '生成失败：返回结果无效', 'error');
+        setGeneratedLink('');
+        return;
+      }
+
+      setGeneratedLink(link);
+      setStatus(linkStatus, response.message, 'ok');
+    } finally {
+      generateLinkInFlight = false;
+      generateLinkButton.disabled = false;
+      generateLinkButton.textContent = originalLabel;
+    }
   });
 
   copyLinkButton.addEventListener('click', async () => {

@@ -5,6 +5,7 @@ import type { RegisterController } from '../features/register/types';
 import { createSettingsDialog } from '../features/settings/panel';
 import { createSmsPanel } from '../features/sms/panel';
 import { createVersionNotice } from '../features/version-check/panel';
+import { canUseExtensionApi, isExtensionContextInvalidated } from './extension-context';
 import { isFeatureTab, loadAppState, saveActiveTab, savePanelCollapsed } from './state';
 import { PANEL_STYLES } from './styles';
 import type { FeaturePanelHandle, FeatureTab } from './types';
@@ -79,11 +80,13 @@ export function createPanel(root: ShadowRoot, registerController: RegisterContro
     if (!isFeatureTab(tab)) {
       return;
     }
-    activeTab = tab;
-    await saveActiveTab(tab);
-    renderActiveTab();
-    await handles[tab].onShow?.();
-    await updateState();
+    await runWithContextGuard(async () => {
+      activeTab = tab;
+      await saveActiveTab(tab);
+      renderActiveTab();
+      await handles[tab].onShow?.();
+      await updateState();
+    });
   };
 
   const renderActiveTab = () => {
@@ -97,6 +100,10 @@ export function createPanel(root: ShadowRoot, registerController: RegisterContro
   };
 
   const updateState = async () => {
+    if (!canUseExtensionApi()) {
+      stopBackgroundLoops();
+      return;
+    }
     const saved = await loadAppState();
     activeTab = saved.activeTab;
     setCollapsed(saved.panelCollapsed);
@@ -114,7 +121,7 @@ export function createPanel(root: ShadowRoot, registerController: RegisterContro
   collapseButton.addEventListener('click', () => {
     const collapsed = !shell.classList.contains('is-collapsed');
     setCollapsed(collapsed);
-    void savePanelCollapsed(collapsed);
+    void runWithContextGuard(() => savePanelCollapsed(collapsed));
   });
 
   topbar.append(tabs, settingsButton);
@@ -122,11 +129,28 @@ export function createPanel(root: ShadowRoot, registerController: RegisterContro
   shell.append(collapseButton, panel);
   root.append(style, shell);
 
-  window.setInterval(() => void updateState(), 1000);
-  window.setTimeout(() => void versionNotice.update(), 800);
-  void updateState().then(() => {
+  const stateTimer = window.setInterval(() => void runWithContextGuard(updateState), 1000);
+  const versionTimer = window.setTimeout(() => void runWithContextGuard(() => versionNotice.update()), 800);
+  void runWithContextGuard(updateState).then(() => {
     void handles[activeTab].onShow?.();
   });
+
+  function stopBackgroundLoops(): void {
+    window.clearInterval(stateTimer);
+    window.clearTimeout(versionTimer);
+  }
+
+  async function runWithContextGuard<T>(task: () => Promise<T> | T): Promise<T | undefined> {
+    try {
+      return await task();
+    } catch (error) {
+      if (isExtensionContextInvalidated(error)) {
+        stopBackgroundLoops();
+        return undefined;
+      }
+      throw error;
+    }
+  }
 }
 
 function getStateLabel(activeTab: FeatureTab, registerController: RegisterController): string {

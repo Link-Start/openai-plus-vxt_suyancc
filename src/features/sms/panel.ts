@@ -1,5 +1,6 @@
 import { loadSmsRelayState, saveSmsRelayState } from '../../app/state';
 import type { FeaturePanelHandle } from '../../app/types';
+import { canUseExtensionApi } from '../../app/extension-context';
 import { parseSmsRelayTargets } from './parser';
 import { fetchSmsRelayCode } from './poller';
 import type { SmsCodeRecord, SmsRelayState, SmsRelayTarget } from './types';
@@ -49,6 +50,7 @@ export function createSmsPanel(container: HTMLElement): FeaturePanelHandle {
   let lastSavedInput = '';
   let inputSaveTimer: number | null = null;
   let inputFocused = false;
+  let pollingActive = false;
 
   container.append(
     summary,
@@ -62,6 +64,9 @@ export function createSmsPanel(container: HTMLElement): FeaturePanelHandle {
   );
 
   input.addEventListener('input', () => {
+    if (pollingActive) {
+      return;
+    }
     scheduleInputSave();
     renderTargetsFromInput();
   });
@@ -74,12 +79,17 @@ export function createSmsPanel(container: HTMLElement): FeaturePanelHandle {
   });
 
   saveButton.addEventListener('click', async () => {
-    await persistInputNow();
-    renderTargetsFromInput();
-    await pollAllTargets();
+    if (pollingActive) {
+      await stopRelayPolling();
+      return;
+    }
+    await startRelayPolling();
   });
 
   pollNowButton.addEventListener('click', async () => {
+    if (pollingActive) {
+      return;
+    }
     await persistInputNow();
     renderTargetsFromInput();
     await pollAllTargets();
@@ -102,11 +112,14 @@ export function createSmsPanel(container: HTMLElement): FeaturePanelHandle {
     }
     renderHistory(state.history);
     renderSummary();
+    syncPollingUi();
   };
 
   const onShow = async () => {
     await update();
-    ensurePolling();
+    if (pollingActive) {
+      ensurePolling();
+    }
   };
 
   void update();
@@ -137,7 +150,72 @@ export function createSmsPanel(container: HTMLElement): FeaturePanelHandle {
     if (pollTimer !== null) {
       return;
     }
-    pollTimer = window.setInterval(() => void pollAllTargets(), POLL_INTERVAL_MS);
+    pollTimer = window.setInterval(() => {
+      if (!canUseExtensionApi()) {
+        stopPolling();
+        setStatus(status, '插件已重新加载，请刷新当前页面后继续接码。', 'error');
+        return;
+      }
+      void pollAllTargets();
+    }, POLL_INTERVAL_MS);
+  }
+
+  function stopPolling(): void {
+    if (pollTimer !== null) {
+      window.clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  async function startRelayPolling(): Promise<void> {
+    await persistInputNow();
+    const parsed = parseSmsRelayTargets(input.value);
+    if (parsed.errors.length) {
+      setStatus(status, parsed.errors.join('；'), 'error');
+      renderTargetsFromInput();
+      syncPollingUi();
+      return;
+    }
+    if (!parsed.targets.length) {
+      setStatus(status, '请先输入接码信息。', 'error');
+      syncPollingUi();
+      return;
+    }
+
+    pollingActive = true;
+    lockEditing(true);
+    setSaveButtonLabel();
+    renderTargetsFromInput();
+    ensurePolling();
+    await pollAllTargets();
+  }
+
+  async function stopRelayPolling(): Promise<void> {
+    pollingActive = false;
+    stopPolling();
+    lockEditing(false);
+    setSaveButtonLabel();
+    await persistInputNow();
+    renderTargetsFromInput();
+    setStatus(status, '接码已停止。', 'ok');
+  }
+
+  function syncPollingUi(): void {
+    lockEditing(pollingActive);
+    setSaveButtonLabel();
+    pollNowButton.disabled = pollingActive;
+  }
+
+  function setSaveButtonLabel(): void {
+    saveButton.textContent = pollingActive ? '停止接码' : '保存并开始';
+    saveButton.classList.toggle('opx-button-danger', pollingActive);
+    saveButton.title = pollingActive ? '停止自动接码轮询' : '保存输入并开始自动接码轮询';
+  }
+
+  function lockEditing(locked: boolean): void {
+    input.disabled = locked;
+    clearHistoryButton.disabled = false;
+    pollNowButton.disabled = locked;
   }
 
   function renderTargetsFromInput(): void {
@@ -181,9 +259,15 @@ export function createSmsPanel(container: HTMLElement): FeaturePanelHandle {
     if (parsed.errors.length) {
       setStatus(status, parsed.errors.join('；'), 'error');
     } else if (parsed.targets.length) {
-      setStatus(status, `已加载 ${parsed.targets.length} 个接码链接，每 3 秒自动获取。`, 'pending');
+      setStatus(
+        status,
+        pollingActive
+          ? `已加载 ${parsed.targets.length} 个接码链接，正在自动获取。`
+          : `已加载 ${parsed.targets.length} 个接码链接。`,
+        'pending',
+      );
     } else {
-      setStatus(status, '输入内容会自动保存。', 'pending');
+      setStatus(status, pollingActive ? '正在接码中。' : '输入内容会自动保存。', 'pending');
     }
     renderSummary();
   }
@@ -235,6 +319,9 @@ export function createSmsPanel(container: HTMLElement): FeaturePanelHandle {
       runtime.status = 'error';
       runtime.message = result.message;
       setStatus(status, `${target.phone} 获取失败：${result.message}`, 'error');
+      if (result.message.includes('插件已重新加载')) {
+        stopPolling();
+      }
       return;
     }
 

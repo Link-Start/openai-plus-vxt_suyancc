@@ -14,6 +14,7 @@ export interface RegisterController {
   getPageState(): PageState;
   loadState(): Promise<RegisterState>;
   saveInput(rawInput: string): Promise<RegisterState>;
+  openRegisterPage(): Promise<ActionResult>;
   fillEmailFromInput(): Promise<ActionResult>;
   fillOtp(code: string): Promise<ActionResult>;
   waitForOutlookOtp(): Promise<ActionResult>;
