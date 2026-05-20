@@ -4,6 +4,12 @@
 
 TG 群组：[https://t.me/fuck_open](https://t.me/fuck_open)
 
+## 下载接码软件
+
+### [点击下载 Outlook 接码软件](https://github.com/suyancc/openai-plus-vxt/releases/download/outlook-otp-service/outlook-otp-service.zip)
+
+注册 tab 使用 Outlook 自动收码前，需要先在本机运行接码软件。下载 zip 后解压，运行 `outlook-otp-service.exe`，默认监听 `http://127.0.0.1:8787`。
+
 ## 功能
 
 - 注册辅助
@@ -124,6 +130,22 @@ email----password----client_id----refresh_token
 ```
 
 插件会调用本地服务的 Outlook 邮件接口等待验证码。没有本地服务时，可以使用单邮箱模式，验证码手动输入。
+
+本仓库提供独立的 Outlook 验证码服务打包脚本：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-outlook-otp-service.ps1
+```
+
+打包后文件：
+
+```text
+.output/outlook-otp-service/dist/outlook-otp-service.exe
+.output/outlook-otp-service/outlook-otp-service.exe
+.output/outlook-otp-service/outlook-otp-service.zip
+```
+
+把 zip 解压到其他 Windows 电脑后，运行 `outlook-otp-service.exe` 即可。服务默认监听 `127.0.0.1:8787`，接口兼容插件注册 tab。
 
 ## 权限和匹配页面
 

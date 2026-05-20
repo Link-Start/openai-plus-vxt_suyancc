@@ -242,7 +242,11 @@ async function resolveSmsPhone(): Promise<string> {
 }
 
 function sanitizePhone(value: string): string {
-  return value.replace(/[^\d+]/g, '').trim();
+  const digits = value.replace(/\D/g, '');
+  if (digits.length === 11 && digits.startsWith('1')) {
+    return digits.slice(1);
+  }
+  return digits;
 }
 
 function createPaypalPassword(email: string): string {

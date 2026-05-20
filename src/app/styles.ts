@@ -267,6 +267,30 @@ export const PANEL_STYLES = `
   color: #86efac;
 }
 
+.opx-download-link {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  min-height: 34px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(47, 209, 124, 0.44);
+  border-radius: 6px;
+  background: rgba(47, 209, 124, 0.14);
+  color: #bbf7d0;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 16px;
+  text-align: center;
+  text-decoration: none;
+}
+
+.opx-download-link:hover {
+  border-color: rgba(47, 209, 124, 0.78);
+  background: rgba(47, 209, 124, 0.2);
+  color: #dcfce7;
+}
+
 .opx-summary {
   margin: 0 0 8px;
   padding: 7px 8px;

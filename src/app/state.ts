@@ -24,6 +24,11 @@ const DEFAULT_REGISTER_STATE: RegisterState = {
   autoOtp: false,
   apiBase: DEFAULT_API_BASE,
   otpRequestedAt: 0,
+  otpAutoPending: false,
+  otpAutoRunning: false,
+  otpJobId: '',
+  otpLastMessage: '',
+  otpLastStartedAt: 0,
   updatedAt: 0,
 };
 
@@ -141,6 +146,11 @@ function normalizeRegisterState(value: unknown): RegisterState {
     autoOtp: Boolean(source.autoOtp),
     apiBase: String(source.apiBase || DEFAULT_REGISTER_STATE.apiBase),
     otpRequestedAt: Number(source.otpRequestedAt || DEFAULT_REGISTER_STATE.otpRequestedAt),
+    otpAutoPending: Boolean(source.otpAutoPending),
+    otpAutoRunning: Boolean(source.otpAutoRunning),
+    otpJobId: String(source.otpJobId || DEFAULT_REGISTER_STATE.otpJobId),
+    otpLastMessage: String(source.otpLastMessage || DEFAULT_REGISTER_STATE.otpLastMessage),
+    otpLastStartedAt: Number(source.otpLastStartedAt || DEFAULT_REGISTER_STATE.otpLastStartedAt),
     updatedAt: Number(source.updatedAt || DEFAULT_REGISTER_STATE.updatedAt),
   };
 }

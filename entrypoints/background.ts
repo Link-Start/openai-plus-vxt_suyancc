@@ -3,7 +3,12 @@ import type { RandomAddressMessage } from '../src/features/address-autofill/type
 import { createCheckoutLink } from '../src/features/link-extractor/checkout';
 import { fetchChatGptSession } from '../src/features/link-extractor/session';
 import type { ChatGptSessionMessage, CheckoutLinkMessage } from '../src/features/link-extractor/types';
-import type { OutlookOtpMessage, OutlookOtpResponse } from '../src/features/register/types';
+import type {
+  OutlookApiCheckMessage,
+  OutlookOtpCancelMessage,
+  OutlookOtpMessage,
+  OutlookOtpResponse,
+} from '../src/features/register/types';
 import type { SmsRelayFetchMessage, SmsRelayFetchResponse } from '../src/features/sms/types';
 
 const DEFAULT_OUTLOOK_API_BASE = 'http://127.0.0.1:8787';
@@ -17,28 +22,35 @@ const ASSISTANT_URL_PREFIXES = [
   'https://www.paypal.com/',
   'https://paypal.com/',
 ];
+const outlookOtpAborters = new Map<string, AbortController>();
 
 export default defineBackground(() => {
   installAssistantInjector();
 
   browser.runtime.onMessage.addListener((message: unknown) => {
-    if (!isOutlookOtpMessage(message)) {
-      if (isCheckoutLinkMessage(message)) {
-        return createCheckoutLink(message.raw, message.options);
-      }
-      if (isChatGptSessionMessage(message)) {
-        return fetchChatGptSession();
-      }
-      if (isRandomAddressMessage(message)) {
-        return fetchRandomAddress(message.countryCode, message.city);
-      }
-      if (isSmsRelayFetchMessage(message)) {
-        return fetchSmsRelay(message.url);
-      }
-      return undefined;
+    if (isOutlookOtpMessage(message)) {
+      return waitForOutlookOtp(message);
+    }
+    if (isOutlookOtpCancelMessage(message)) {
+      return cancelOutlookOtp(message);
+    }
+    if (isOutlookApiCheckMessage(message)) {
+      return checkOutlookApi(message);
     }
 
-    return waitForOutlookOtp(message);
+    if (isCheckoutLinkMessage(message)) {
+      return createCheckoutLink(message.raw, message.options);
+    }
+    if (isChatGptSessionMessage(message)) {
+      return fetchChatGptSession();
+    }
+    if (isRandomAddressMessage(message)) {
+      return fetchRandomAddress(message.countryCode, message.city);
+    }
+    if (isSmsRelayFetchMessage(message)) {
+      return fetchSmsRelay(message.url);
+    }
+    return undefined;
   });
 });
 
@@ -77,25 +89,92 @@ function isAssistantUrl(url: string | undefined): boolean {
 }
 
 async function waitForOutlookOtp(message: OutlookOtpMessage): Promise<OutlookOtpResponse> {
+  const jobId = message.jobId || makeOutlookJobId();
   const startedAt = message.since ?? Date.now();
   const deadline = Date.now() + (message.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const intervalMs = message.intervalMs ?? DEFAULT_INTERVAL_MS;
   const apiBase = normalizeApiBase(message.apiBase || DEFAULT_OUTLOOK_API_BASE);
+  const aborter = new AbortController();
+  outlookOtpAborters.set(jobId, aborter);
 
-  while (Date.now() <= deadline) {
-    const result = await fetchLatestOtp(apiBase, message.accountLine, startedAt);
-    if (result.ok && result.code) {
-      return result;
+  try {
+    while (Date.now() <= deadline) {
+      if (aborter.signal.aborted) {
+        return {
+          ok: false,
+          canceled: true,
+          message: '已停止 Outlook 验证码接收',
+        };
+      }
+      const result = await fetchLatestOtp(apiBase, message.accountLine, startedAt, aborter.signal);
+      if (result.ok && result.code) {
+        return result;
+      }
+      if (!result.ok && result.fatal) {
+        return result;
+      }
+      await delay(intervalMs, aborter.signal);
     }
-    if (!result.ok && result.fatal) {
-      return result;
+
+    return {
+      ok: false,
+      message: '等待 Outlook 验证码超时',
+    };
+  } finally {
+    if (outlookOtpAborters.get(jobId) === aborter) {
+      outlookOtpAborters.delete(jobId);
     }
-    await delay(intervalMs);
+  }
+}
+
+function cancelOutlookOtp(message: OutlookOtpCancelMessage): OutlookOtpResponse {
+  let canceled = false;
+  if (message.jobId) {
+    const aborter = outlookOtpAborters.get(message.jobId);
+    if (aborter) {
+      aborter.abort();
+      outlookOtpAborters.delete(message.jobId);
+      canceled = true;
+    }
+  } else {
+    for (const aborter of outlookOtpAborters.values()) {
+      aborter.abort();
+      canceled = true;
+    }
+    outlookOtpAborters.clear();
+  }
+  return {
+    ok: true,
+    canceled,
+    message: canceled ? '已发送停止接收验证码指令' : '当前没有正在接收的 Outlook 验证码任务',
+  };
+}
+
+async function checkOutlookApi(message: OutlookApiCheckMessage): Promise<OutlookOtpResponse> {
+  const apiBase = normalizeApiBase(message.apiBase || DEFAULT_OUTLOOK_API_BASE);
+  let response: Response;
+  try {
+    response = await fetch(`${apiBase}/health`, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: AbortSignal.timeout(1800),
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      message: `本地 Outlook 服务未连接：${String(error)}`,
+    };
   }
 
+  if (!response.ok) {
+    return {
+      ok: false,
+      message: `本地 Outlook 服务异常：HTTP ${response.status}`,
+    };
+  }
   return {
-    ok: false,
-    message: '等待 Outlook 验证码超时',
+    ok: true,
+    message: '本地 Outlook 服务已启动',
   };
 }
 
@@ -103,6 +182,7 @@ async function fetchLatestOtp(
   apiBase: string,
   accountLine: string,
   startedAt: number,
+  signal?: AbortSignal,
 ): Promise<OutlookOtpResponse & { fatal?: boolean }> {
   let response: Response;
   try {
@@ -117,8 +197,17 @@ async function fetchLatestOtp(
         unseen_only: false,
         mark_seen: false,
       }),
+      signal,
     });
   } catch (error) {
+    if (signal?.aborted) {
+      return {
+        ok: false,
+        fatal: true,
+        canceled: true,
+        message: '已停止 Outlook 验证码接收',
+      };
+    }
     return {
       ok: false,
       fatal: true,
@@ -169,6 +258,22 @@ function isOutlookOtpMessage(message: unknown): message is OutlookOtpMessage {
       typeof message === 'object' &&
       (message as OutlookOtpMessage).type === 'opx:wait-outlook-otp' &&
       typeof (message as OutlookOtpMessage).accountLine === 'string',
+  );
+}
+
+function isOutlookOtpCancelMessage(message: unknown): message is OutlookOtpCancelMessage {
+  return Boolean(
+    message &&
+      typeof message === 'object' &&
+      (message as OutlookOtpCancelMessage).type === 'opx:cancel-outlook-otp',
+  );
+}
+
+function isOutlookApiCheckMessage(message: unknown): message is OutlookApiCheckMessage {
+  return Boolean(
+    message &&
+      typeof message === 'object' &&
+      (message as OutlookApiCheckMessage).type === 'opx:check-outlook-api',
   );
 }
 
@@ -300,8 +405,29 @@ async function readResponseDetail(response: Response): Promise<string> {
   }
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function makeOutlookJobId(): string {
+  return `outlook-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

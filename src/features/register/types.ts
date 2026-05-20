@@ -18,6 +18,7 @@ export interface RegisterController {
   fillEmailFromInput(): Promise<ActionResult>;
   fillOtp(code: string): Promise<ActionResult>;
   waitForOutlookOtp(): Promise<ActionResult>;
+  stopOutlookOtp(): Promise<ActionResult>;
   fillProfileAndCreate(): Promise<ActionResult>;
   autoRunForCurrentPage(): Promise<void>;
 }
@@ -30,6 +31,11 @@ export interface RegisterState {
   autoOtp: boolean;
   apiBase: string;
   otpRequestedAt: number;
+  otpAutoPending: boolean;
+  otpAutoRunning: boolean;
+  otpJobId: string;
+  otpLastMessage: string;
+  otpLastStartedAt: number;
   updatedAt: number;
 }
 
@@ -45,6 +51,7 @@ export interface ParsedAccountInput {
 
 export interface OutlookOtpMessage {
   type: 'opx:wait-outlook-otp';
+  jobId?: string;
   accountLine: string;
   apiBase?: string;
   timeoutMs?: number;
@@ -56,4 +63,15 @@ export interface OutlookOtpResponse {
   ok: boolean;
   message: string;
   code?: string;
+  canceled?: boolean;
+}
+
+export interface OutlookOtpCancelMessage {
+  type: 'opx:cancel-outlook-otp';
+  jobId?: string;
+}
+
+export interface OutlookApiCheckMessage {
+  type: 'opx:check-outlook-api';
+  apiBase?: string;
 }
